@@ -177,7 +177,6 @@ create_instance() {
         --network-tier=PREMIUM \
         --maintenance-policy=MIGRATE \
         --provisioning-model=STANDARD \
-        --service-account="$PROJECT_ID@appspot.gserviceaccount.com" \
         --scopes=https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write,https://www.googleapis.com/auth/servicecontrol,https://www.googleapis.com/auth/service.management.readonly,https://www.googleapis.com/auth/trace.append \
         --tags=phoenix-server \
         --create-disk=auto-delete=yes,boot=yes,device-name="$INSTANCE_NAME",image=projects/ubuntu-os-cloud/global/images/family/ubuntu-2204-lts,mode=rw,size="$DISK_SIZE",type=projects/"$PROJECT_ID"/zones/"$ZONE"/diskTypes/pd-standard \
