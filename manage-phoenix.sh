@@ -18,6 +18,7 @@ fi
 PROJECT_ID="${PROJECT_ID:-your-gcp-project-id}"
 INSTANCE_NAME="${INSTANCE_NAME:-phoenix-server}"
 ZONE="${ZONE:-us-central1-a}"
+BACKUP_BUCKET="${BACKUP_BUCKET:-${PROJECT_ID}-phoenix-backups}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -115,21 +116,146 @@ update() {
     '
 }
 
-# Backup Phoenix data
+# Ensure backup bucket exists
+ensure_backup_bucket() {
+    if ! gsutil ls -b gs://"$BACKUP_BUCKET" &> /dev/null; then
+        log_info "Creating backup bucket: gs://$BACKUP_BUCKET"
+        gsutil mb gs://"$BACKUP_BUCKET"
+        
+        # Set lifecycle policy to delete backups older than 30 days
+        cat > /tmp/lifecycle.json << 'EOF'
+{
+  "lifecycle": {
+    "rule": [
+      {
+        "action": {"type": "Delete"},
+        "condition": {"age": 30}
+      }
+    ]
+  }
+}
+EOF
+        gsutil lifecycle set /tmp/lifecycle.json gs://"$BACKUP_BUCKET"
+        rm /tmp/lifecycle.json
+        log_info "Bucket created with 30-day retention policy"
+    else
+        log_info "Using existing backup bucket: gs://$BACKUP_BUCKET"
+    fi
+}
+
+# Backup Phoenix data to GCS
 backup() {
     log_info "Creating backup of Phoenix data..."
     check_instance
     
-    BACKUP_NAME="phoenix-backup-$(date +%Y%m%d-%H%M%S)"
+    # Ensure backup bucket exists
+    ensure_backup_bucket
     
+    BACKUP_NAME="phoenix-backup-$(date +%Y%m%d-%H%M%S)"
+    BACKUP_PATH="/tmp/$BACKUP_NAME.tar.gz"
+    GCS_PATH="gs://$BACKUP_BUCKET/$BACKUP_NAME.tar.gz"
+    
+    log_info "Creating backup archive on instance..."
     gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
-        sudo tar -czf /tmp/$BACKUP_NAME.tar.gz -C /opt/phoenix data/
-        echo 'Backup created: /tmp/$BACKUP_NAME.tar.gz'
+        sudo tar -czf $BACKUP_PATH -C /opt/phoenix data/
+        echo 'Backup created: $BACKUP_PATH'
+        ls -lh $BACKUP_PATH
     "
     
-    # Download backup
-    gcloud compute scp "$INSTANCE_NAME:/tmp/$BACKUP_NAME.tar.gz" ./ --zone="$ZONE"
-    log_info "Backup downloaded to: $BACKUP_NAME.tar.gz"
+    log_info "Uploading backup to GCS: $GCS_PATH"
+    gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
+        # Upload to GCS
+        gsutil cp $BACKUP_PATH $GCS_PATH
+        
+        # Verify upload
+        if gsutil ls $GCS_PATH &> /dev/null; then
+            echo 'Backup successfully uploaded to GCS'
+            # Clean up local file
+            sudo rm $BACKUP_PATH
+            echo 'Local backup file cleaned up'
+        else
+            echo 'ERROR: Failed to upload backup to GCS'
+            exit 1
+        fi
+    "
+    
+    log_info "Backup completed successfully!"
+    log_info "Backup location: $GCS_PATH"
+    log_info "To download: gsutil cp $GCS_PATH ./"
+    log_info "To list all backups: gsutil ls gs://$BACKUP_BUCKET/"
+}
+
+# List available backups
+list_backups() {
+    log_info "Listing available backups..."
+    ensure_backup_bucket
+    
+    echo "Available backups in gs://$BACKUP_BUCKET:"
+    gsutil ls -l gs://"$BACKUP_BUCKET"/phoenix-backup-*.tar.gz 2>/dev/null | sort -k2 -r || {
+        log_warn "No backups found in gs://$BACKUP_BUCKET"
+    }
+}
+
+# Restore Phoenix data from GCS backup
+restore() {
+    if [[ $# -eq 0 ]]; then
+        log_error "Please specify a backup file to restore"
+        echo "Usage: $0 restore <backup-filename>"
+        echo ""
+        echo "Available backups:"
+        list_backups
+        exit 1
+    fi
+    
+    BACKUP_FILE="$1"
+    GCS_PATH="gs://$BACKUP_BUCKET/$BACKUP_FILE"
+    
+    log_info "Restoring Phoenix data from: $GCS_PATH"
+    check_instance
+    
+    # Verify backup exists
+    if ! gsutil ls "$GCS_PATH" &> /dev/null; then
+        log_error "Backup file not found: $GCS_PATH"
+        echo ""
+        echo "Available backups:"
+        list_backups
+        exit 1
+    fi
+    
+    log_warn "This will replace all current Phoenix data!"
+    read -p "Are you sure you want to continue? (y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "Restore cancelled"
+        return
+    fi
+    
+    log_info "Stopping Phoenix service..."
+    gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="sudo systemctl stop phoenix"
+    
+    log_info "Downloading and restoring backup..."
+    gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
+        # Download backup
+        gsutil cp $GCS_PATH /tmp/restore.tar.gz
+        
+        # Backup current data
+        sudo mv /opt/phoenix/data /opt/phoenix/data.backup.\$(date +%Y%m%d-%H%M%S) 2>/dev/null || true
+        
+        # Extract backup
+        sudo mkdir -p /opt/phoenix
+        sudo tar -xzf /tmp/restore.tar.gz -C /opt/phoenix/
+        sudo chown -R phoenix:phoenix /opt/phoenix/data
+        
+        # Clean up
+        rm /tmp/restore.tar.gz
+        
+        echo 'Restore completed successfully'
+    "
+    
+    log_info "Starting Phoenix service..."
+    gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="sudo systemctl start phoenix"
+    
+    log_info "Restore completed successfully!"
 }
 
 # Show resource usage
@@ -170,17 +296,19 @@ help() {
     echo "Usage: $0 [COMMAND] [OPTIONS]"
     echo ""
     echo "Commands:"
-    echo "  status      Show instance and Phoenix service status"
-    echo "  start       Start the instance"
-    echo "  stop        Stop the instance"
-    echo "  restart     Restart the instance"
-    echo "  logs        Show Phoenix logs (follow mode)"
-    echo "  ssh         SSH into the instance"
-    echo "  update      Update Phoenix to the latest version"
-    echo "  backup      Create and download a backup of Phoenix data"
-    echo "  resources   Show resource usage"
-    echo "  delete      Delete the instance (WARNING: destructive)"
-    echo "  help        Show this help message"
+    echo "  status        Show instance and Phoenix service status"
+    echo "  start         Start the instance"
+    echo "  stop          Stop the instance"
+    echo "  restart       Restart the instance"
+    echo "  logs          Show Phoenix logs (follow mode)"
+    echo "  ssh           SSH into the instance"
+    echo "  update        Update Phoenix to the latest version"
+    echo "  backup        Create and upload backup to GCS"
+    echo "  list-backups  List available backups in GCS"
+    echo "  restore       Restore from GCS backup (usage: restore <backup-filename>)"
+    echo "  resources     Show resource usage"
+    echo "  delete        Delete the instance (WARNING: destructive)"
+    echo "  help          Show this help message"
     echo ""
     echo "Options:"
     echo "  -p, --project PROJECT_ID     GCP Project ID"
@@ -207,9 +335,14 @@ while [[ $# -gt 0 ]]; do
             ZONE="$2"
             shift 2
             ;;
-        status|start|stop|restart|logs|ssh|update|backup|resources|delete|help)
+        status|start|stop|restart|logs|ssh|update|backup|list-backups|restore|resources|delete|help)
             COMMAND="$1"
             shift
+            # Handle restore command with argument
+            if [[ "$COMMAND" == "restore" && $# -gt 0 ]]; then
+                RESTORE_FILE="$1"
+                shift
+            fi
             ;;
         *)
             log_error "Unknown option: $1"
@@ -259,6 +392,12 @@ case $COMMAND in
         ;;
     backup)
         backup
+        ;;
+    list-backups)
+        list_backups
+        ;;
+    restore)
+        restore "$RESTORE_FILE"
         ;;
     resources)
         resources

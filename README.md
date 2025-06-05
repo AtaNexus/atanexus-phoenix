@@ -107,8 +107,14 @@ Note: The management script also automatically loads your configuration file.
 # Update Phoenix to latest version
 ./manage-phoenix.sh update
 
-# Create backup
+# Create backup (uploads to GCS)
 ./manage-phoenix.sh backup
+
+# List available backups
+./manage-phoenix.sh list-backups
+
+# Restore from backup
+./manage-phoenix.sh restore phoenix-backup-20231205-143022.tar.gz
 
 # View resource usage
 ./manage-phoenix.sh resources
@@ -165,6 +171,36 @@ Phoenix data is stored in `/opt/phoenix/data/` on the instance and persists acro
 
 ```bash
 ./manage-phoenix.sh backup
+```
+
+## Backup and Restore
+
+Phoenix backups are automatically stored in Google Cloud Storage with the following features:
+
+- **Automatic bucket creation** with 30-day retention policy
+- **Compressed archives** for efficient storage
+- **Timestamped backups** for easy identification
+- **Easy restore** from any backup
+
+### Backup Commands
+
+```bash
+# Create a backup
+./manage-phoenix.sh backup
+
+# List all available backups
+./manage-phoenix.sh list-backups
+
+# Restore from a specific backup
+./manage-phoenix.sh restore phoenix-backup-20231205-143022.tar.gz
+```
+
+### Configuration
+
+You can customize the backup bucket in your `phoenix-config.local.env`:
+
+```bash
+BACKUP_BUCKET=my-custom-backup-bucket
 ```
 
 ## Security Considerations
