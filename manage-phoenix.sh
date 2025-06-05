@@ -5,6 +5,15 @@
 
 set -euo pipefail
 
+# Load configuration from phoenix-config.local.env if it exists
+if [[ -f "phoenix-config.local.env" ]]; then
+    echo "Loading configuration from phoenix-config.local.env..."
+    source phoenix-config.local.env
+elif [[ -f "phoenix-config.env" ]]; then
+    echo "Loading configuration from phoenix-config.env..."
+    source phoenix-config.env
+fi
+
 # Default configuration
 PROJECT_ID="${PROJECT_ID:-your-gcp-project-id}"
 INSTANCE_NAME="${INSTANCE_NAME:-phoenix-server}"

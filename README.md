@@ -58,9 +58,10 @@ Make the deployment script executable and run it:
 
 ```bash
 chmod +x deploy-phoenix-gcp.sh
-source phoenix-config.local.env
 ./deploy-phoenix-gcp.sh
 ```
+
+Note: The script automatically loads `phoenix-config.local.env` if it exists, so you don't need to source it manually.
 
 Or specify configuration via command line:
 
@@ -82,8 +83,9 @@ Use the management script to control your Phoenix instance:
 
 ```bash
 chmod +x manage-phoenix.sh
-source phoenix-config.local.env
 ```
+
+Note: The management script also automatically loads your configuration file.
 
 ### Available Commands
 
