@@ -306,21 +306,11 @@ SSH into your instance and set up a reverse proxy with SSL:
 sudo apt update
 sudo apt install -y nginx certbot python3-certbot-nginx
 
-# Create Nginx configuration for Phoenix
+# Create initial Nginx configuration for Phoenix (HTTP only, SSL will be added by Certbot)
 sudo tee /etc/nginx/sites-available/phoenix.atanexus.com << 'EOF'
 server {
     listen 80;
     server_name phoenix.atanexus.com;
-    
-    # Redirect all HTTP traffic to HTTPS
-    return 301 https://$server_name$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name phoenix.atanexus.com;
-    
-    # SSL configuration (will be managed by Certbot)
     
     # Proxy configuration for Phoenix
     location / {
@@ -359,12 +349,40 @@ sudo systemctl enable nginx
 sudo systemctl start nginx
 ```
 
-#### 3. Obtain SSL Certificate
+#### 3. Update Firewall Rules (BEFORE SSL Certificate)
 
-Once DNS propagation is complete (usually 5-15 minutes), obtain an SSL certificate:
+First, allow HTTP and HTTPS traffic so Certbot can verify domain ownership:
 
 ```bash
-# Still in the SSH session on your instance
+# Exit SSH session first
+exit
+
+# Allow HTTP traffic (required for Certbot domain verification)
+gcloud compute firewall-rules create allow-http \
+  --allow tcp:80 \
+  --source-ranges 0.0.0.0/0 \
+  --description "Allow HTTP traffic for SSL verification and renewal"
+
+# Allow HTTPS traffic
+gcloud compute firewall-rules create allow-https \
+  --allow tcp:443 \
+  --source-ranges 0.0.0.0/0 \
+  --description "Allow HTTPS traffic"
+```
+
+#### 4. Obtain SSL Certificate
+
+Once DNS propagation is complete (usually 5-15 minutes) AND firewall rules are in place, obtain an SSL certificate:
+
+```bash
+# SSH back into your instance
+./manage-phoenix.sh ssh
+
+# Verify Nginx is running and accessible
+sudo systemctl status nginx
+curl -I http://localhost
+
+# Now run Certbot
 sudo certbot --nginx -d phoenix.atanexus.com
 
 # Follow the prompts:
@@ -374,25 +392,13 @@ sudo certbot --nginx -d phoenix.atanexus.com
 # - Select option 2 to redirect HTTP to HTTPS (recommended)
 ```
 
-#### 4. Update Firewall Rules
+#### 5. Optional Security Enhancement
 
-Allow HTTPS traffic and optionally restrict HTTP/Phoenix port access:
+After SSL is working, you can optionally restrict direct access to Phoenix port:
 
 ```bash
 # Exit SSH session first
 exit
-
-# Allow HTTPS traffic
-gcloud compute firewall-rules create allow-https \
-  --allow tcp:443 \
-  --source-ranges 0.0.0.0/0 \
-  --description "Allow HTTPS traffic"
-
-# Allow HTTP traffic (for Certbot renewal)
-gcloud compute firewall-rules create allow-http \
-  --allow tcp:80 \
-  --source-ranges 0.0.0.0/0 \
-  --description "Allow HTTP traffic for SSL renewal"
 
 # Optional: Restrict direct access to Phoenix port to localhost only
 gcloud compute firewall-rules update phoenix-allow-6006 \
@@ -400,22 +406,23 @@ gcloud compute firewall-rules update phoenix-allow-6006 \
   --description "Restrict Phoenix port to localhost (behind Nginx proxy)"
 ```
 
-#### 5. Auto-renewal Setup
+#### 6. Auto-renewal Setup
 
 Certbot automatically sets up a cron job for certificate renewal, but verify it:
 
 ```bash
-# SSH back into the instance
-./manage-phoenix.sh ssh
-
+# Still in the SSH session on your instance
 # Test auto-renewal
 sudo certbot renew --dry-run
 
 # Check cron job exists
 sudo crontab -l
+
+# Exit SSH session
+exit
 ```
 
-#### 6. Verification
+#### 7. Verification
 
 After DNS propagation (5-30 minutes), verify your setup:
 
@@ -437,7 +444,7 @@ After DNS propagation (5-30 minutes), verify your setup:
    # Should return 301 redirect to HTTPS
    ```
 
-#### 7. Update Your Configuration (Optional)
+#### 8. Update Your Configuration (Optional)
 
 Update your local configuration to reflect the custom domain:
 
