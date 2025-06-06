@@ -81,77 +81,24 @@ create_firewall_rule() {
     fi
 }
 
-# Create the startup script
-create_startup_script() {
-    log_info "Creating startup script..."
+# Prepare the startup script
+prepare_startup_script() {
+    log_info "Preparing startup script with configuration..."
     
-    cat > startup-script.sh << 'EOF'
-#!/bin/bash
-
-# Update system
-apt-get update
-apt-get install -y python3 python3-pip python3-venv docker.io
-
-# Start Docker service
-systemctl start docker
-systemctl enable docker
-
-# Create phoenix user
-useradd -m -s /bin/bash phoenix || true
-usermod -aG docker phoenix
-
-# Create directory for Phoenix
-mkdir -p /opt/phoenix
-chown phoenix:phoenix /opt/phoenix
-
-# Create systemd service for Phoenix
-cat > /etc/systemd/system/phoenix.service << 'PHOENIX_SERVICE'
-[Unit]
-Description=Arize Phoenix Server
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=exec
-User=phoenix
-Group=phoenix
-WorkingDirectory=/opt/phoenix
-ExecStartPre=/usr/bin/docker pull arizephoenix/phoenix:PHOENIX_VERSION_PLACEHOLDER
-ExecStart=/usr/bin/docker run --rm --name phoenix \
-    -p PHOENIX_PORT_PLACEHOLDER:6006 \
-    -v /opt/phoenix/data:/phoenix/data \
-    -e PHOENIX_SQL_DATABASE_URL=sqlite:////phoenix/data/phoenix.db \
-    arizephoenix/phoenix:PHOENIX_VERSION_PLACEHOLDER
-ExecStop=/usr/bin/docker stop phoenix
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-PHOENIX_SERVICE
-
-# Replace placeholders in service file
-sed -i "s/PHOENIX_VERSION_PLACEHOLDER/PHOENIX_VERSION_VALUE/g" /etc/systemd/system/phoenix.service
-sed -i "s/PHOENIX_PORT_PLACEHOLDER/PHOENIX_PORT_VALUE/g" /etc/systemd/system/phoenix.service
-
-# Create data directory
-mkdir -p /opt/phoenix/data
-chown -R phoenix:phoenix /opt/phoenix
-
-# Enable and start Phoenix service
-systemctl daemon-reload
-systemctl enable phoenix
-systemctl start phoenix
-
-# Log the startup completion
-echo "Phoenix deployment completed at $(date)" >> /opt/phoenix/deployment.log
-EOF
-
-    # Replace placeholders in startup script
-    sed -i "s/PHOENIX_VERSION_VALUE/$PHOENIX_VERSION/g" startup-script.sh
-    sed -i "s/PHOENIX_PORT_VALUE/$PHOENIX_PORT/g" startup-script.sh
+    # Use the existing startup-script.sh as base
+    if [[ ! -f "startup-script.sh" ]]; then
+        log_error "startup-script.sh not found. Please ensure it exists in the current directory."
+        exit 1
+    fi
     
-    log_info "Startup script created"
+    # Create a temporary copy with replaced placeholders
+    cp startup-script.sh startup-script-deploy.sh
+    
+    # Replace placeholders in the deployment copy
+    sed -i "s/PHOENIX_VERSION_PLACEHOLDER/$PHOENIX_VERSION/g" startup-script-deploy.sh
+    sed -i "s/PHOENIX_PORT_PLACEHOLDER/$PHOENIX_PORT/g" startup-script-deploy.sh
+    
+    log_info "Startup script prepared with version: $PHOENIX_VERSION, port: $PHOENIX_PORT"
 }
 
 # Create the VM instance
@@ -185,7 +132,7 @@ create_instance() {
         --shielded-integrity-monitoring \
         --labels=app=phoenix,environment=production \
         --reservation-affinity=any \
-        --metadata-from-file startup-script=startup-script.sh
+        --metadata-from-file startup-script=startup-script-deploy.sh
     
     log_info "Instance created successfully!"
 }
@@ -229,9 +176,12 @@ deploy() {
     check_prerequisites
     set_project
     create_firewall_rule
-    create_startup_script
+    prepare_startup_script
     create_instance
     get_instance_info
+    
+    # Clean up temporary files
+    rm -f startup-script-deploy.sh
 }
 
 # Parse command line arguments

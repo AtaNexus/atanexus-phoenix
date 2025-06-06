@@ -2,8 +2,8 @@
 phoenix-config.local.env
 *.local.env
 
-# Temporary startup scripts
-startup-script.sh
+# Temporary deployment files
+startup-script-deploy.sh
 
 # Backup files
 phoenix-backup-*.tar.gz
@@ -23,4 +23,7 @@ Thumbs.db
 
 # Temporary files
 *.tmp
-*.temp 
+*.temp
+
+# Generated files
+*.generated 

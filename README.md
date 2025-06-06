@@ -528,6 +528,22 @@ For higher loads, consider:
 0 18 * * 1-5 gcloud compute instances stop phoenix-server --zone=us-central1-a
 ```
 
+## Cleanup
+
+The deployment process may create temporary files. Use the cleanup script to remove them:
+
+```bash
+# Clean temporary deployment files
+./cleanup.sh temp
+
+# Or simply
+./cleanup.sh
+```
+
+This will remove:
+- `startup-script-deploy.sh` (temporary deployment script)
+- Any `*.tmp` or `*.temp` files
+
 ## Support
 
 For Phoenix-specific issues, visit:
