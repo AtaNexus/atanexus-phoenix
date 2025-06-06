@@ -269,6 +269,212 @@ BACKUP_BUCKET=my-custom-backup-bucket
    ./manage-phoenix.sh ssh
    ```
 
+## Custom Domain Setup
+
+### Binding Phoenix to https://phoenix.atanexus.com
+
+To bind your Phoenix instance to a custom domain like `https://phoenix.atanexus.com`, follow these steps:
+
+#### 1. DNS Configuration
+
+First, you need to point your domain to your GCP instance's external IP:
+
+```bash
+# Get your instance's external IP
+EXTERNAL_IP=$(gcloud compute instances describe ${INSTANCE_NAME:-atanexus-phoenix-server} \
+  --zone=${ZONE:-us-central1-a} \
+  --format='get(networkInterfaces[0].accessConfigs[0].natIP)')
+
+echo "Your instance external IP: $EXTERNAL_IP"
+```
+
+Then create an A record in your DNS provider (e.g., Cloudflare, Route 53, etc.):
+- **Type**: A
+- **Name**: phoenix.atanexus.com
+- **Value**: `$EXTERNAL_IP` (the IP from above)
+- **TTL**: 300 (or your preference)
+
+#### 2. Install and Configure Nginx with SSL
+
+SSH into your instance and set up a reverse proxy with SSL:
+
+```bash
+# SSH into your Phoenix instance
+./manage-phoenix.sh ssh
+
+# Install Nginx and Certbot
+sudo apt update
+sudo apt install -y nginx certbot python3-certbot-nginx
+
+# Create Nginx configuration for Phoenix
+sudo tee /etc/nginx/sites-available/phoenix.atanexus.com << 'EOF'
+server {
+    listen 80;
+    server_name phoenix.atanexus.com;
+    
+    # Redirect all HTTP traffic to HTTPS
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name phoenix.atanexus.com;
+    
+    # SSL configuration (will be managed by Certbot)
+    
+    # Proxy configuration for Phoenix
+    location / {
+        proxy_pass http://localhost:6006;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # WebSocket support (if Phoenix uses WebSockets)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        
+        # Increase timeout for long-running requests
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+    }
+    
+    # Security headers
+    add_header X-Frame-Options DENY;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+}
+EOF
+
+# Enable the site
+sudo ln -sf /etc/nginx/sites-available/phoenix.atanexus.com /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+
+# Test Nginx configuration
+sudo nginx -t
+
+# Start and enable Nginx
+sudo systemctl enable nginx
+sudo systemctl start nginx
+```
+
+#### 3. Obtain SSL Certificate
+
+Once DNS propagation is complete (usually 5-15 minutes), obtain an SSL certificate:
+
+```bash
+# Still in the SSH session on your instance
+sudo certbot --nginx -d phoenix.atanexus.com
+
+# Follow the prompts:
+# - Enter your email address
+# - Agree to terms of service
+# - Choose whether to share email with EFF
+# - Select option 2 to redirect HTTP to HTTPS (recommended)
+```
+
+#### 4. Update Firewall Rules
+
+Allow HTTPS traffic and optionally restrict HTTP/Phoenix port access:
+
+```bash
+# Exit SSH session first
+exit
+
+# Allow HTTPS traffic
+gcloud compute firewall-rules create allow-https \
+  --allow tcp:443 \
+  --source-ranges 0.0.0.0/0 \
+  --description "Allow HTTPS traffic"
+
+# Allow HTTP traffic (for Certbot renewal)
+gcloud compute firewall-rules create allow-http \
+  --allow tcp:80 \
+  --source-ranges 0.0.0.0/0 \
+  --description "Allow HTTP traffic for SSL renewal"
+
+# Optional: Restrict direct access to Phoenix port to localhost only
+gcloud compute firewall-rules update phoenix-allow-6006 \
+  --source-ranges 127.0.0.1/32 \
+  --description "Restrict Phoenix port to localhost (behind Nginx proxy)"
+```
+
+#### 5. Auto-renewal Setup
+
+Certbot automatically sets up a cron job for certificate renewal, but verify it:
+
+```bash
+# SSH back into the instance
+./manage-phoenix.sh ssh
+
+# Test auto-renewal
+sudo certbot renew --dry-run
+
+# Check cron job exists
+sudo crontab -l
+```
+
+#### 6. Verification
+
+After DNS propagation (5-30 minutes), verify your setup:
+
+1. **Check DNS resolution**:
+   ```bash
+   nslookup phoenix.atanexus.com
+   # Should return your instance IP
+   ```
+
+2. **Test HTTPS access**:
+   ```bash
+   curl -I https://phoenix.atanexus.com
+   # Should return 200 OK
+   ```
+
+3. **Verify redirect**:
+   ```bash
+   curl -I http://phoenix.atanexus.com
+   # Should return 301 redirect to HTTPS
+   ```
+
+#### 7. Update Your Configuration (Optional)
+
+Update your local configuration to reflect the custom domain:
+
+```bash
+# Add to your phoenix-config.local.env
+echo "PHOENIX_DOMAIN=phoenix.atanexus.com" >> phoenix-config.local.env
+echo "PHOENIX_URL=https://phoenix.atanexus.com" >> phoenix-config.local.env
+```
+
+### Maintenance
+
+#### SSL Certificate Renewal
+Certbot auto-renews certificates, but you can manually renew:
+
+```bash
+./manage-phoenix.sh ssh
+sudo certbot renew
+sudo systemctl reload nginx
+```
+
+#### Nginx Configuration Updates
+If you need to update Nginx configuration:
+
+```bash
+./manage-phoenix.sh ssh
+sudo nano /etc/nginx/sites-available/phoenix.atanexus.com
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+#### Troubleshooting Domain Issues
+
+1. **DNS not resolving**: Wait for propagation (up to 48 hours)
+2. **SSL certificate issues**: Check Certbot logs: `sudo journalctl -u certbot`
+3. **502 Bad Gateway**: Ensure Phoenix is running: `sudo systemctl status phoenix`
+4. **Connection refused**: Check firewall rules and Nginx status
+
 ## Advanced Configuration
 
 ### Custom Docker Image
